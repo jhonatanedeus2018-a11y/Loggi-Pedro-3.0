@@ -1,0 +1,19 @@
+{
+  "name": "Cobaia Scan Loggi 2",
+  "short_name": "RouteScan",
+  "description": "Extração inteligente de endereços e pacotes de capturas de tela.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3063/3063822.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
