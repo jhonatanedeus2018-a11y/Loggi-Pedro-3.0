@@ -41,10 +41,33 @@ enum AppStatus {
   SUCCESS = 'SUCCESS'
 }
 
+// --- FUNÇÃO DE LIMPEZA DE JSON ---
+const extractJson = (text: string) => {
+  try {
+    // Tenta encontrar o conteúdo entre blocos de código markdown ```json ... ```
+    const match = text.match(/```json\s?([\s\S]*?)\s?```/) || text.match(/```\s?([\s\S]*?)\s?```/);
+    const jsonStr = match ? match[1] : text;
+    return JSON.parse(jsonStr.trim());
+  } catch (e) {
+    console.error("Erro ao limpar JSON:", e);
+    // Se falhar, tenta limpar caracteres não-JSON comuns no início/fim
+    try {
+      const start = text.indexOf('{');
+      const end = text.lastIndexOf('}');
+      if (start !== -1 && end !== -1) {
+        return JSON.parse(text.substring(start, end + 1));
+      }
+    } catch (e2) {
+      throw new Error("Não foi possível processar a resposta do servidor.");
+    }
+    throw e;
+  }
+};
+
 // --- SERVIÇO DE IA (GEMINI) ---
 const extractAddressesFromImage = async (base64DataUrl: string): Promise<ExtractionResult> => {
-  // A chave API é obtida exclusivamente via process.env.API_KEY para garantir segurança e portabilidade
-  const ai = new GoogleGenAI({ apiKey:"AIzaSyArE1LCvaV6jf4jTsaDVBbljbA0CAVytRc" });
+  // Conforme as diretrizes, a chave deve vir de process.env.API_KEY
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
   
   const matches = base64DataUrl.match(/^data:([^;]+);base64,(.+)$/);
   if (!matches) throw new Error("Formato de imagem inválido.");
@@ -52,46 +75,54 @@ const extractAddressesFromImage = async (base64DataUrl: string): Promise<Extract
   const mimeType = matches[1];
   const base64Data = matches[2];
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: [{
-      parts: [
-        { inlineData: { mimeType, data: base64Data } },
-        { text: "Você é um assistente de logística. Extraia todos os dados de pacotes/entregas deste print. Foque em: Número do Pacote, Endereço, CEP e Cidade. Ignore elementos de interface do celular. Retorne em JSON." }
-      ]
-    }],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          stops: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                stopNumber: { type: Type.STRING },
-                address: { type: Type.STRING },
-                cep: { type: Type.STRING },
-                city: { type: Type.STRING },
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [{
+        parts: [
+          { inlineData: { mimeType, data: base64Data } },
+          { text: "Você é um assistente de logística. Extraia rigorosamente todos os dados de pacotes/entregas deste print. Retorne EXCLUSIVAMENTE um objeto JSON com a chave 'stops', contendo 'stopNumber', 'address', 'cep' e 'city' para cada item." }
+        ]
+      }],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            stops: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  stopNumber: { type: Type.STRING },
+                  address: { type: Type.STRING },
+                  cep: { type: Type.STRING },
+                  city: { type: Type.STRING },
+                },
+                required: ["stopNumber", "address", "cep", "city"],
               },
-              required: ["stopNumber", "address", "cep", "city"],
             },
           },
+          required: ["stops"],
         },
-        required: ["stops"],
       },
-    },
-  });
+    });
 
-  const parsed = JSON.parse(response.text) as ExtractionResult;
-  return {
-    stops: (parsed.stops || []).map((s, i) => ({
-      ...s,
-      id: `s-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 5)}`,
-      cep: s.cep.replace(/\D/g, '').replace(/(\d{5})(\d{3})/, '$1-$2')
-    }))
-  };
+    if (!response.text) throw new Error("A IA retornou uma resposta vazia.");
+    
+    const parsed = extractJson(response.text) as ExtractionResult;
+    return {
+      stops: (parsed.stops || []).map((s, i) => ({
+        ...s,
+        id: `s-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 5)}`,
+        // Formatação básica de CEP
+        cep: s.cep ? s.cep.replace(/\D/g, '').replace(/(\d{5})(\d{3})/, '$1-$2') : ""
+      }))
+    };
+  } catch (err) {
+    console.error("Erro na extração:", err);
+    throw err;
+  }
 };
 
 // --- COMPONENTES DE INTERFACE ---
@@ -162,7 +193,7 @@ const App = () => {
 
     setStops(prev => {
       const all = [...prev, ...batch];
-      // Deduplicação inteligente: Mesmo número e endereço similar = Mesma parada
+      // Deduplicação por número e endereço
       return all.filter((v, i, a) => 
         a.findIndex(t => t.stopNumber === v.stopNumber && t.address.toLowerCase().trim() === v.address.toLowerCase().trim()) === i
       ).sort((a,b) => (parseInt(a.stopNumber) || 0) - (parseInt(b.stopNumber) || 0));
